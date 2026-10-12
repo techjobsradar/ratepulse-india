@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://ratepulse-india.vercel.app/sitemap.xml
