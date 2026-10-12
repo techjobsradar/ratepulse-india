@@ -48,6 +48,8 @@ export default function App() {
     const controller = new AbortController();
     let cancelled = false;
     setRatesStatus('loading');
+    setMarketRates(null);
+    const timeout = setTimeout(() => controller.abort(), 10000);
     fetch('/api/market-rates', { signal: controller.signal })
       .then(async response => {
         const data = await response.json().catch(() => ({}));
@@ -73,12 +75,13 @@ export default function App() {
         setRatesStatus('live');
       })
       .catch(error => {
-        if (!cancelled && error.name !== 'AbortError') {
+        if (!cancelled) {
           setMarketRates(null);
           setRatesStatus('unavailable');
         }
-      });
-    return () => { cancelled = true; controller.abort(); };
+      })
+      .finally(() => clearTimeout(timeout));
+    return () => { cancelled = true; controller.abort(); clearTimeout(timeout); };
   }, [marketRetry]);
 
   useEffect(() => {
