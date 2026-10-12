@@ -2,13 +2,11 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Activity, ArrowDownRight, ArrowRight, ArrowUpRight, BarChart3, Bell, ChevronDown, Fuel, Gem, Globe2, Landmark, Menu, Newspaper, Search, ShieldCheck, TrendingUp, Wallet, X } from 'lucide-react';
 
 const cities = ['New Delhi', 'Mumbai', 'Hyderabad', 'Bengaluru', 'Chennai', 'Kolkata', 'Vijayawada'];
-const fuelData = Object.fromEntries(
-  cities.map(city => [city, {
-    petrol: 'Not connected',
-    diesel: 'Not connected',
-    kerosene: 'Check official local source'
-  }])
-);
+const emptyFuel = {
+  petrol: null,
+  diesel: null,
+  kerosene: 'Check official local source'
+};
 const metals = [
   { name: 'Gold 24K', unit: 'per 10 grams', price: 'Verify today’s rate', trend: 'Market-linked', icon: Gem },
   { name: 'Gold 22K', unit: 'per 10 grams', price: 'Verify today’s rate', trend: 'Market-linked', icon: Gem },
@@ -22,6 +20,16 @@ const articles = [
 ];
 function SectionTitle({ eyebrow, title, link }) { return <div className="section-title"><div><span className="eyebrow">{eyebrow}</span><h2>{title}</h2></div>{link && <a href="#news" className="text-link">{link} <ArrowRight size={16}/></a>}</div>; }
 
+function displayFuelPrice(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return 'Not connected';
+  return new Intl.NumberFormat('en-IN', {
+    style: 'currency',
+    currency: 'INR',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  }).format(value) + ' / L';
+}
+
 export default function App() {
   const [city, setCity] = useState('Hyderabad');
   const [query, setQuery] = useState('');
@@ -30,6 +38,10 @@ export default function App() {
   const [subscribed, setSubscribed] = useState(false);
   const [marketRates, setMarketRates] = useState(null);
   const [ratesStatus, setRatesStatus] = useState('loading');
+  const [fuelRates, setFuelRates] = useState(null);
+  const [fuelStatus, setFuelStatus] = useState('loading');
+  const [fuelError, setFuelError] = useState('');
+
   useEffect(() => {
     let cancelled = false;
     fetch('/api/market-rates')
@@ -43,11 +55,47 @@ export default function App() {
       .catch(() => { if (!cancelled) setRatesStatus('unavailable'); });
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setFuelStatus('loading');
+    setFuelError('');
+    setFuelRates(null);
+
+    fetch(`/api/fuel-prices?city=${encodeURIComponent(city)}`)
+      .then(async response => {
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data.message || `Fuel API returned HTTP ${response.status}`);
+        }
+        return data;
+      })
+      .then(data => {
+        if (cancelled) return;
+        setFuelRates(data);
+        setFuelStatus(data.status || 'unavailable');
+        if (data.status !== 'live') {
+          setFuelError(data.message || 'Live fuel prices are not available for this city.');
+        }
+      })
+      .catch(error => {
+        if (cancelled) return;
+        setFuelStatus('unavailable');
+        setFuelError(error.message || 'Could not load fuel prices.');
+      });
+
+    return () => { cancelled = true; };
+  }, [city]);
+
   const formatINR = value => typeof value === 'number' && Number.isFinite(value)
     ? new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(value)
     : 'Not connected';
   const filteredArticles = useMemo(() => articles.filter(a => `${a.category} ${a.title}`.toLowerCase().includes(query.toLowerCase())), [query]);
-  const fuel = fuelData[city];
+  const fuel = {
+    ...emptyFuel,
+    petrol: fuelStatus === 'live' ? displayFuelPrice(fuelRates?.petrol) : (fuelStatus === 'loading' ? 'Loading…' : 'Not connected'),
+    diesel: fuelStatus === 'live' ? displayFuelPrice(fuelRates?.diesel) : (fuelStatus === 'loading' ? 'Loading…' : 'Not connected')
+  };
   const dateLabel = new Intl.DateTimeFormat('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }).format(new Date());
 
   return <div className="app">
@@ -65,7 +113,7 @@ export default function App() {
       </div><div className="wrap hero-bottom"><span>BUILT FOR EVERYDAY INDIA</span><div><span><Fuel size={16}/> Energy</span><span><Gem size={16}/> Metals</span><span><Landmark size={16}/> Economy</span><span><Newspaper size={16}/> Personal finance</span></div></div></section>
 
       <section className="wrap rate-section" id="rates"><SectionTitle eyebrow="THE NUMBERS THAT MATTER" title="Today’s rate centre" link="Browse all rates"/><div className="rate-grid" id="fuel">
-        <div className="rate-card fuel-card"><div className="card-heading"><span className="card-icon fuel-bg"><Fuel size={20}/></span><div><h3>Fuel rates</h3><p>Choose a city for reference prices</p></div></div><label className="select-label" htmlFor="city-select">SELECT CITY</label><div className="select-wrap"><select id="city-select" value={city} onChange={e => setCity(e.target.value)}>{cities.map(c => <option key={c}>{c}</option>)}</select><ChevronDown size={17}/></div><div className="fuel-price"><span>Petrol</span><b className="small-price">{fuel.petrol}</b></div><div className="fuel-price"><span>Diesel</span><b className="small-price">{fuel.diesel}</b></div><div className="fuel-price"><span>Kerosene</span><b className="small-price">{fuel.kerosene}</b></div><div className="disclaimer">Live city-wise fuel data is not connected. No fuel prices are displayed until a permitted, reliable data provider is configured. Check the relevant oil company or official local source.</div></div>
+        <div className="rate-card fuel-card"><div className="card-heading"><span className="card-icon fuel-bg"><Fuel size={20}/></span><div><h3>Fuel rates</h3><p>Choose a city for reference prices</p></div></div><label className="select-label" htmlFor="city-select">SELECT CITY</label><div className="select-wrap"><select id="city-select" value={city} onChange={e => setCity(e.target.value)}>{cities.map(c => <option key={c}>{c}</option>)}</select><ChevronDown size={17}/></div><div className="fuel-price"><span>Petrol</span><b className="small-price">{fuel.petrol}</b></div><div className="fuel-price"><span>Diesel</span><b className="small-price">{fuel.diesel}</b></div><div className="fuel-price"><span>Kerosene</span><b className="small-price">{fuel.kerosene}</b></div><div className="disclaimer">{fuelStatus === 'live' ? `Reference prices from ${fuelRates?.source || 'Indian API'}${fuelRates?.updatedAt ? ` · Updated ${new Date(fuelRates.updatedAt).toLocaleString('en-IN')}` : ''}. Prices can vary by outlet; confirm with the official oil company before acting.` : fuelStatus === 'loading' ? 'Loading fuel prices for the selected city…' : `Live city-wise fuel prices are unavailable. ${fuelError || 'Check the API configuration and provider response.'} No prices are invented; please verify with an official local source.`}</div></div>
         <div className="metals-wrap" id="metals"><div className="metals-heading"><div><span className="eyebrow">BULLION & GEMS</span><h3>Precious metals</h3></div><span className="mini-label">RATE GUIDE</span></div><div className="metal-grid">{metals.map(item => <div className="metal-card" key={item.name}><div className="metal-icon"><item.icon size={19}/></div><span className="metal-name">{item.name}</span><b className="metal-price">{item.name === 'Gold 24K' ? formatINR(marketRates?.metals?.gold24k?.per10g) : item.name === 'Gold 22K' ? formatINR(marketRates?.metals?.gold22k?.per10g) : item.name === 'Silver' ? formatINR(marketRates?.metals?.silverPerKg) : item.price}</b><span className="metal-unit">{item.unit}</span><span className="metal-trend">{item.name === 'Gold 24K' || item.name === 'Gold 22K' || item.name === 'Silver' ? (ratesStatus === 'live' ? 'Indicative spot rate' : ratesStatus === 'loading' ? 'Loading rate…' : 'API key required') : item.trend}</span></div>)}</div><p className="small-note">{ratesStatus === 'live' ? `Indicative spot-equivalent prices from GoldAPI.io. Last updated: ${marketRates?.updatedAt ? new Date(marketRates.updatedAt).toLocaleString('en-IN') : 'time unavailable'}.` : 'Gold and silver live rates are not connected yet. Add a GoldAPI.io key in Vercel to enable them.'} Jewellery taxes, making charges, purity, location and dealer pricing can affect final prices. These are not guaranteed retail jewellery quotes. Diamond prices vary by quality and certification.</p></div>
       </div></section>
 
@@ -75,6 +123,6 @@ export default function App() {
 
       <section className="newsletter-section" id="newsletter"><div className="wrap newsletter-inner"><div className="newsletter-icon"><Bell size={24}/></div><div className="newsletter-copy"><span className="eyebrow light">THE RATEPULSE BRIEF</span><h2>A little clarity in your inbox.</h2><p>Sign-up UI preview. Connect a compliant email service before collecting subscribers.</p></div><form className="newsletter-form" onSubmit={e => {e.preventDefault(); if (email.includes('@')) setSubscribed(true);}}><div className="email-input"><input type="email" value={email} onChange={e => {setEmail(e.target.value); setSubscribed(false);}} placeholder="Your email address" required/><button type="submit" aria-label="Submit email"><ArrowRight size={18}/></button></div><span className="form-note">{subscribed ? 'Demo only: no email was saved or sent.' : 'No spam. Unsubscribe whenever you like.'}</span></form></div></section>
     </main>
-    <footer className="footer"><div className="wrap footer-main"><div className="footer-brand"><a href="#" className="brand"><span className="brand-mark"><Activity size={23}/></span><span>RatePulse <b>India</b><small>DAILY RATES. SMARTER DECISIONS.</small></span></a><p>Clear information for everyday money decisions.</p></div><div className="footer-links"><div><b>Explore</b><a href="#fuel">Fuel rates</a><a href="#metals">Gold & silver</a><a href="#markets">Market watch</a><a href="#news">Financial news</a></div><div><b>Information</b><a href="#disclaimer">About us</a><a href="#disclaimer">Privacy policy</a><a href="#disclaimer">Editorial policy</a><a href="#disclaimer">Contact</a></div></div></div><div className="wrap footer-bottom" id="disclaimer"><span>© {new Date().getFullYear()} RatePulse India. Starter website.</span><span>Important: Fuel rates are not connected and are not displayed as live quotes. Confirm prices with official providers. Gold and silver are indicative spot-equivalent prices when available; market content is educational and not investment advice.</span></div></footer>
+    <footer className="footer"><div className="wrap footer-main"><div className="footer-brand"><a href="#" className="brand"><span className="brand-mark"><Activity size={23}/></span><span>RatePulse <b>India</b><small>DAILY RATES. SMARTER DECISIONS.</small></span></a><p>Clear information for everyday money decisions.</p></div><div className="footer-links"><div><b>Explore</b><a href="#fuel">Fuel rates</a><a href="#metals">Gold & silver</a><a href="#markets">Market watch</a><a href="#news">Financial news</a></div><div><b>Information</b><a href="#disclaimer">About us</a><a href="#disclaimer">Privacy policy</a><a href="#disclaimer">Editorial policy</a><a href="#disclaimer">Contact</a></div></div></div><div className="wrap footer-bottom" id="disclaimer"><span>© {new Date().getFullYear()} RatePulse India. Starter website.</span><span>Important: Fuel prices are displayed only when returned by the configured provider. Confirm prices with official providers. Gold and silver are indicative spot-equivalent prices when available; market content is educational and not investment advice.</span></div></footer>
   </div>;
 }
