@@ -41,20 +41,45 @@ export default function App() {
   const [fuelRates, setFuelRates] = useState(null);
   const [fuelStatus, setFuelStatus] = useState('loading');
   const [fuelError, setFuelError] = useState('');
+  const [marketRetry, setMarketRetry] = useState(0);
+  const [fuelRetry, setFuelRetry] = useState(0);
 
   useEffect(() => {
+    const controller = new AbortController();
     let cancelled = false;
-    fetch('/api/market-rates')
-      .then(response => response.ok ? response.json() : Promise.reject(new Error('Rates API unavailable')))
-      .then(data => {
-        if (!cancelled) {
-          setMarketRates(data);
-          setRatesStatus(data.status || 'unavailable');
-        }
+    setRatesStatus('loading');
+    fetch('/api/market-rates', { signal: controller.signal })
+      .then(async response => {
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.message || 'Live metal rates are unavailable.');
+        return data;
       })
-      .catch(() => { if (!cancelled) setRatesStatus('unavailable'); });
-    return () => { cancelled = true; };
-  }, []);
+      .then(data => {
+        if (cancelled) return;
+        const rates = data?.metals;
+        const valid = data?.status === 'live' &&
+          typeof rates?.gold24k?.per10g === 'number' && rates.gold24k.per10g > 0 &&
+          typeof rates?.gold22k?.per10g === 'number' && rates.gold22k.per10g > 0 &&
+          typeof rates?.silverPerKg === 'number' && rates.silverPerKg > 0 &&
+          Number.isFinite(Date.parse(data.updatedAt)) &&
+          Date.now() - Date.parse(data.updatedAt) <= 24 * 60 * 60 * 1000 &&
+          Date.parse(data.updatedAt) <= Date.now() + 5 * 60 * 1000;
+        if (!valid) {
+          setMarketRates(null);
+          setRatesStatus(data?.status === 'loading' ? 'loading' : 'unavailable');
+          return;
+        }
+        setMarketRates(data);
+        setRatesStatus('live');
+      })
+      .catch(error => {
+        if (!cancelled && error.name !== 'AbortError') {
+          setMarketRates(null);
+          setRatesStatus('unavailable');
+        }
+      });
+    return () => { cancelled = true; controller.abort(); };
+  }, [marketRetry]);
 
   useEffect(() => {
     let cancelled = false;
@@ -62,7 +87,9 @@ export default function App() {
     setFuelError('');
     setFuelRates(null);
 
-    fetch(`/api/fuel-prices?city=${encodeURIComponent(city)}`)
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    fetch(`/api/fuel-prices?city=${encodeURIComponent(city)}`, { signal: controller.signal })
       .then(async response => {
         const data = await response.json().catch(() => ({}));
         if (!response.ok) {
@@ -79,13 +106,20 @@ export default function App() {
         }
       })
       .catch(error => {
-        if (cancelled) return;
+        if (cancelled || error.name === 'AbortError') {
+          if (!cancelled) {
+            setFuelStatus('unavailable');
+            setFuelError('The request timed out. Please try again.');
+          }
+          return;
+        }
         setFuelStatus('unavailable');
         setFuelError(error.message || 'Could not load fuel prices.');
-      });
+      })
+      .finally(() => clearTimeout(timeout));
 
-    return () => { cancelled = true; };
-  }, [city]);
+    return () => { cancelled = true; controller.abort(); clearTimeout(timeout); };
+  }, [city, fuelRetry]);
 
   const formatINR = value => typeof value === 'number' && Number.isFinite(value)
     ? new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(value)
@@ -113,8 +147,8 @@ export default function App() {
       </div><div className="wrap hero-bottom"><span>BUILT FOR EVERYDAY INDIA</span><div><span><Fuel size={16}/> Energy</span><span><Gem size={16}/> Metals</span><span><Landmark size={16}/> Economy</span><span><Newspaper size={16}/> Personal finance</span></div></div></section>
 
       <section className="wrap rate-section" id="rates"><SectionTitle eyebrow="THE NUMBERS THAT MATTER" title="Today’s rate centre" link="Browse all rates"/><div className="rate-grid" id="fuel">
-        <div className="rate-card fuel-card"><div className="card-heading"><span className="card-icon fuel-bg"><Fuel size={20}/></span><div><h3>Fuel rates</h3><p>Choose a city for reference prices</p></div></div><label className="select-label" htmlFor="city-select">SELECT CITY</label><div className="select-wrap"><select id="city-select" value={city} onChange={e => setCity(e.target.value)}>{cities.map(c => <option key={c}>{c}</option>)}</select><ChevronDown size={17}/></div><div className="fuel-price"><span>Petrol</span><b className="small-price">{fuel.petrol}</b></div><div className="fuel-price"><span>Diesel</span><b className="small-price">{fuel.diesel}</b></div><div className="fuel-price"><span>Kerosene</span><b className="small-price">{fuel.kerosene}</b></div><div className="disclaimer">{fuelStatus === 'live' ? `Reference prices from ${fuelRates?.source || 'Indian API'}${fuelRates?.updatedAt ? ` · Updated ${new Date(fuelRates.updatedAt).toLocaleString('en-IN')}` : ''}. Prices can vary by outlet; confirm with the official oil company before acting.` : fuelStatus === 'loading' ? 'Loading fuel prices for the selected city…' : `Live city-wise fuel prices are unavailable. ${fuelError || 'Check the API configuration and provider response.'} No prices are invented; please verify with an official local source.`}</div></div>
-        <div className="metals-wrap" id="metals"><div className="metals-heading"><div><span className="eyebrow">BULLION & GEMS</span><h3>Precious metals</h3></div><span className="mini-label">RATE GUIDE</span></div><div className="metal-grid">{metals.map(item => <div className="metal-card" key={item.name}><div className="metal-icon"><item.icon size={19}/></div><span className="metal-name">{item.name}</span><b className="metal-price">{item.name === 'Gold 24K' ? formatINR(marketRates?.metals?.gold24k?.per10g) : item.name === 'Gold 22K' ? formatINR(marketRates?.metals?.gold22k?.per10g) : item.name === 'Silver' ? formatINR(marketRates?.metals?.silverPerKg) : item.price}</b><span className="metal-unit">{item.unit}</span><span className="metal-trend">{item.name === 'Gold 24K' || item.name === 'Gold 22K' || item.name === 'Silver' ? (ratesStatus === 'live' ? 'Indicative spot rate' : ratesStatus === 'loading' ? 'Loading rate…' : 'API key required') : item.trend}</span></div>)}</div><p className="small-note">{ratesStatus === 'live' ? `Indicative spot-equivalent prices from GoldAPI.io. Last updated: ${marketRates?.updatedAt ? new Date(marketRates.updatedAt).toLocaleString('en-IN') : 'time unavailable'}.` : 'Gold and silver live rates are not connected yet. Add a GoldAPI.io key in Vercel to enable them.'} Jewellery taxes, making charges, purity, location and dealer pricing can affect final prices. These are not guaranteed retail jewellery quotes. Diamond prices vary by quality and certification.</p></div>
+        <div className="rate-card fuel-card"><div className="card-heading"><span className="card-icon fuel-bg"><Fuel size={20}/></span><div><h3>Fuel rates</h3><p>Choose a city for reference prices</p></div></div><label className="select-label" htmlFor="city-select">SELECT CITY</label><div className="select-wrap"><select id="city-select" value={city} onChange={e => setCity(e.target.value)}>{cities.map(c => <option key={c}>{c}</option>)}</select><ChevronDown size={17}/></div><div className="fuel-price"><span>Petrol</span><b className="small-price">{fuel.petrol}</b></div><div className="fuel-price"><span>Diesel</span><b className="small-price">{fuel.diesel}</b></div><div className="fuel-price"><span>Kerosene</span><b className="small-price">{fuel.kerosene}</b></div><div className="disclaimer">{fuelStatus === 'live' ? `Reference prices from ${fuelRates?.source || 'Indian API'}${fuelRates?.updatedAt ? ` · Updated ${new Date(fuelRates.updatedAt).toLocaleString('en-IN')}` : ''}. Prices can vary by outlet; confirm with the official oil company before acting.` : fuelStatus === 'loading' ? 'Loading fuel prices for the selected city…' : `Live city-wise fuel prices are unavailable. ${fuelError || 'Check the API configuration and provider response.'} No prices are invented; please verify with an official local source.`}</div>{fuelStatus !== 'loading' && <button className="retry-button" type="button" onClick={() => setFuelRetry(value => value + 1)}>Retry fuel prices</button>}</div>
+        <div className="metals-wrap" id="metals"><div className="metals-heading"><div><span className="eyebrow">BULLION & GEMS</span><h3>Precious metals</h3></div><span className="mini-label">RATE GUIDE</span></div><div className="metal-grid">{metals.map(item => <div className="metal-card" key={item.name}><div className="metal-icon"><item.icon size={19}/></div><span className="metal-name">{item.name}</span><b className="metal-price">{item.name === 'Gold 24K' ? formatINR(marketRates?.metals?.gold24k?.per10g) : item.name === 'Gold 22K' ? formatINR(marketRates?.metals?.gold22k?.per10g) : item.name === 'Silver' ? formatINR(marketRates?.metals?.silverPerKg) : item.price}</b><span className="metal-unit">{item.unit}</span><span className="metal-trend">{item.name === 'Gold 24K' || item.name === 'Gold 22K' || item.name === 'Silver' ? (ratesStatus === 'live' ? 'Indicative spot rate' : ratesStatus === 'loading' ? 'Loading rate…' : 'API key required') : item.trend}</span></div>)}</div><p className="small-note">{ratesStatus === 'live' ? `Indicative spot-equivalent prices from GoldAPI.io. Last updated: ${marketRates?.updatedAt ? new Date(marketRates.updatedAt).toLocaleString('en-IN') : 'time unavailable'}.` : ratesStatus === 'loading' ? 'Checking live gold and silver rates…' : 'Live gold and silver prices could not be verified. Please try again shortly.'} Jewellery taxes, making charges, purity, location and dealer pricing can affect final prices. These are not guaranteed retail jewellery quotes. Diamond prices vary by quality and certification.</p>{ratesStatus !== 'loading' && <button className="retry-button" type="button" onClick={() => setMarketRetry(value => value + 1)}>Retry metal prices</button>}</div>
       </div></section>
 
       <section className="market-band" id="markets"><div className="wrap market-inner"><div className="market-intro"><span className="eyebrow light">MARKET WATCH</span><h2>Stay informed.<br/><em>Think long term.</em></h2><p>Follow the forces shaping India’s economy with explainers designed for everyday readers.</p><a href="#news" className="market-link">Explore financial insights <ArrowRight size={16}/></a></div><div className="market-feature"><div className="feature-top"><span className="feature-tag">MARKET BASICS</span><span className="feature-symbol"><TrendingUp size={20}/></span></div><h3>Understand the headlines, not just the numbers.</h3><p>Learn the basics of inflation, interest rates, market movements and household budgeting.</p><a href="#news">Explore learning centre <ArrowRight size={16}/></a><div className="chart-decoration"><svg viewBox="0 0 400 95" role="img" aria-label="Decorative rising market line"><path d="M0 78 L35 62 L65 68 L100 38 L132 52 L170 29 L205 44 L245 18 L275 31 L315 8 L350 23 L400 2" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/><path d="M0 78 L35 62 L65 68 L100 38 L132 52 L170 29 L205 44 L245 18 L275 31 L315 8 L350 23 L400 2 L400 95 L0 95Z" fill="currentColor" opacity=".08"/></svg></div></div></div></section>
