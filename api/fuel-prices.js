@@ -75,14 +75,24 @@ async function fetchFuel(type, key) {
   return rows(await fetchJsonWithRetry(url, key, type));
 }
 function getRate(list, city) {
+  if (!list.length) return { rate: null, reason: 'provider_rows_empty_or_unrecognized' };
   const names = aliases[normalize(city)] || [normalize(city)];
   const row = list.find(item => names.includes(normalize(item?.city ?? item?.name ?? item?.location)));
+  if (!row) return { rate: null, reason: 'city_record_not_found' };
   const value = typeof row?.price === 'number'
     ? row.price
     : Number(String(row?.price ?? '').replace(/,/g, ''));
-  const timestamp = row?.updated_at ?? row?.updatedAt ?? row?.timestamp ?? row?.last_updated;
-  if (!row || !Number.isFinite(value) || value <= 0 || !isFreshTimestamp(timestamp)) return null;
-  return { price: value, updatedAt: new Date(parseTimestamp(timestamp)).toISOString() };
+  if (!Number.isFinite(value) || value <= 0) return { rate: null, reason: 'price_missing_or_invalid' };
+  const timestampFields = ['updated_at', 'updatedAt', 'timestamp', 'last_updated'];
+  const timestampField = timestampFields.find(field => row?.[field] !== undefined && row?.[field] !== null && row?.[field] !== '');
+  const timestamp = timestampField ? row[timestampField] : null;
+  if (!timestampField) {
+    return { rate: null, reason: 'timestamp_field_not_found', rowFields: Object.keys(row).slice(0, 40) };
+  }
+  if (!isFreshTimestamp(timestamp)) {
+    return { rate: null, reason: 'timestamp_invalid_or_stale', timestampField };
+  }
+  return { rate: { price: value, updatedAt: new Date(parseTimestamp(timestamp)).toISOString() }, reason: null };
 }
 
 export default async function handler(req, res) {
@@ -119,13 +129,19 @@ export default async function handler(req, res) {
       fetchFuel('petrol', key),
       fetchFuel('diesel', key)
     ]);
-    const petrol = getRate(petrolRows, city);
-    const diesel = getRate(dieselRows, city);
+    const petrolResult = getRate(petrolRows, city);
+    const dieselResult = getRate(dieselRows, city);
+    const petrol = petrolResult.rate;
+    const diesel = dieselResult.rate;
     if (!petrol || !diesel) {
       return res.status(502).json({
         status: 'unavailable',
         city,
         message: 'The provider did not return fresh, verifiable prices for this city.',
+        diagnostic: {
+          petrol: { reason: petrolResult.reason, ...(petrolResult.timestampField ? { timestampField: petrolResult.timestampField } : {}), ...(petrolResult.rowFields ? { rowFields: petrolResult.rowFields } : {}) },
+          diesel: { reason: dieselResult.reason, ...(dieselResult.timestampField ? { timestampField: dieselResult.timestampField } : {}), ...(dieselResult.rowFields ? { rowFields: dieselResult.rowFields } : {}) }
+        },
         petrol: null,
         diesel: null,
         updatedAt: null
