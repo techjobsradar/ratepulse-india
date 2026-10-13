@@ -75,14 +75,17 @@ async function fetchFuel(type, key) {
   return rows(await fetchJsonWithRetry(url, key, type));
 }
 function getRate(list, city) {
+  if (!list.length) return { rate: null, reason: 'provider_rows_empty_or_unrecognized' };
   const names = aliases[normalize(city)] || [normalize(city)];
   const row = list.find(item => names.includes(normalize(item?.city ?? item?.name ?? item?.location)));
+  if (!row) return { rate: null, reason: 'city_record_not_found' };
   const value = typeof row?.price === 'number'
     ? row.price
     : Number(String(row?.price ?? '').replace(/,/g, ''));
+  if (!Number.isFinite(value) || value <= 0) return { rate: null, reason: 'price_missing_or_invalid' };
   const timestamp = row?.updated_at ?? row?.updatedAt ?? row?.timestamp ?? row?.last_updated;
-  if (!row || !Number.isFinite(value) || value <= 0 || !isFreshTimestamp(timestamp)) return null;
-  return { price: value, updatedAt: new Date(parseTimestamp(timestamp)).toISOString() };
+  if (!isFreshTimestamp(timestamp)) return { rate: null, reason: 'timestamp_missing_or_stale' };
+  return { rate: { price: value, updatedAt: new Date(parseTimestamp(timestamp)).toISOString() }, reason: null };
 }
 
 export default async function handler(req, res) {
@@ -119,13 +122,16 @@ export default async function handler(req, res) {
       fetchFuel('petrol', key),
       fetchFuel('diesel', key)
     ]);
-    const petrol = getRate(petrolRows, city);
-    const diesel = getRate(dieselRows, city);
+    const petrolResult = getRate(petrolRows, city);
+    const dieselResult = getRate(dieselRows, city);
+    const petrol = petrolResult.rate;
+    const diesel = dieselResult.rate;
     if (!petrol || !diesel) {
       return res.status(502).json({
         status: 'unavailable',
         city,
         message: 'The provider did not return fresh, verifiable prices for this city.',
+        diagnostic: { petrol: petrolResult.reason, diesel: dieselResult.reason },
         petrol: null,
         diesel: null,
         updatedAt: null
