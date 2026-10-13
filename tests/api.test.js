@@ -23,12 +23,9 @@ function jsonResponse(body, status = 200) {
 }
 const originalFetch = globalThis.fetch;
 const originalGoldKey = process.env.GOLDAPI_KEY;
-const originalFuelKey = process.env.FUEL_API_KEY;
 function resetEnv() {
   if (originalGoldKey === undefined) delete process.env.GOLDAPI_KEY;
   else process.env.GOLDAPI_KEY = originalGoldKey;
-  if (originalFuelKey === undefined) delete process.env.FUEL_API_KEY;
-  else process.env.FUEL_API_KEY = originalFuelKey;
 }
 test.after(() => { globalThis.fetch = originalFetch; resetEnv(); });
 
@@ -86,21 +83,21 @@ test('fuel endpoint rejects unsupported cities', async () => {
   assert.equal(res.body.status, 'error');
 });
 
-test('fuel endpoint reports missing key without prices', async () => {
-  delete process.env.FUEL_API_KEY;
-  const res = await invoke(fuelHandler, { method: 'GET', query: { city: 'Hyderabad' } });
-  assert.equal(res.statusCode, 503);
-  assert.equal(res.body.status, 'not_configured');
-  assert.equal(res.body.petrol, null);
-  assert.equal(res.body.diesel, null);
-});
-
-test('fuel endpoint returns current city prices', async () => {
-  process.env.FUEL_API_KEY = 'test-secret';
-  const timestamp = new Date().toISOString();
+test('fuel endpoint returns current city prices from the free provider', async () => {
+  const updatedAt = new Date().toISOString();
   globalThis.fetch = async url => {
-    const type = new URL(String(url)).searchParams.get('fuel_type');
-    return jsonResponse([{ city: 'Hyderabad', price: type === 'petrol' ? 105.5 : 92.2, updated_at: timestamp }]);
+    const parsed = new URL(String(url));
+    assert.equal(parsed.hostname, 'api.apimitra.in');
+    assert.equal(parsed.searchParams.get('city'), 'Hyderabad');
+    return jsonResponse({
+      status: 'ok',
+      price: {
+        location: 'Hyderabad',
+        petrol: { price: 105.5 },
+        diesel: { price: 92.2 },
+        updated_at: updatedAt
+      }
+    });
   };
   const res = await invoke(fuelHandler, { method: 'GET', query: { city: 'Hyderabad' } });
   assert.equal(res.statusCode, 200);
@@ -111,12 +108,16 @@ test('fuel endpoint returns current city prices', async () => {
 });
 
 test('fuel endpoint rejects missing or stale timestamps', async () => {
-  process.env.FUEL_API_KEY = 'test-secret';
   const stale = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
-  globalThis.fetch = async url => {
-    const type = new URL(String(url)).searchParams.get('fuel_type');
-    return jsonResponse([{ city: 'Hyderabad', price: type === 'petrol' ? 105.5 : 92.2, updated_at: stale }]);
-  };
+  globalThis.fetch = async () => jsonResponse({
+    status: 'ok',
+    price: {
+      location: 'Hyderabad',
+      petrol: { price: 105.5 },
+      diesel: { price: 92.2 },
+      updated_at: stale
+    }
+  });
   const res = await invoke(fuelHandler, { method: 'GET', query: { city: 'Hyderabad' } });
   assert.equal(res.statusCode, 502);
   assert.equal(res.body.status, 'unavailable');
