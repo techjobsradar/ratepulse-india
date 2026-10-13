@@ -35,7 +35,7 @@ function rows(body) {
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
-async function fetchJsonWithRetry(url, key, attempts = 2) {
+async function fetchJsonWithRetry(url, key, fuelType, attempts = 2) {
   let lastError;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const controller = new AbortController();
@@ -51,10 +51,12 @@ async function fetchJsonWithRetry(url, key, attempts = 2) {
         return data;
       }
       lastError = new Error(`Provider HTTP ${response.status}`);
+      console.error('RatePulse fuel provider HTTP error:', JSON.stringify({ provider: 'indianapi', fuelType, status: response.status, attempt: attempt + 1 }));
       const retryable = response.status === 429 || response.status >= 500;
       if (!retryable || attempt === attempts - 1) throw lastError;
     } catch (error) {
       lastError = error;
+      console.error('RatePulse fuel provider request error:', JSON.stringify({ provider: 'indianapi', fuelType, attempt: attempt + 1, errorName: error?.name || 'Error', errorMessage: String(error?.message || 'unknown error').slice(0, 180) }));
       const retryable = error?.name === 'AbortError' || error instanceof TypeError ||
         error.message === 'Invalid provider response' ||
         /Provider HTTP (429|5\d\d)/.test(error.message || '');
@@ -70,7 +72,7 @@ async function fetchFuel(type, key) {
   const url = new URL('https://fuel.indianapi.in/live_fuel_price');
   url.searchParams.set('fuel_type', type);
   url.searchParams.set('location_type', 'city');
-  return rows(await fetchJsonWithRetry(url, key));
+  return rows(await fetchJsonWithRetry(url, key, type));
 }
 function getRate(list, city) {
   const names = aliases[normalize(city)] || [normalize(city)];
@@ -141,7 +143,7 @@ export default async function handler(req, res) {
       updatedAt: [petrol.updatedAt, diesel.updatedAt].sort()[0]
     });
   } catch (error) {
-    console.error('RatePulse fuel rates unavailable:', error?.message || 'unknown error');
+    console.error('RatePulse fuel rates unavailable:', JSON.stringify({ city, errorName: error?.name || 'Error', errorMessage: String(error?.message || 'unknown error').slice(0, 180) }));
     return res.status(502).json({
       status: 'unavailable',
       city,
